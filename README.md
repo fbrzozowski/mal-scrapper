@@ -6,7 +6,7 @@ and a column listing that ad's downloaded media files.
 
 ## Desktop app (Windows / macOS)
 
-No Python needed. The app is a small window: paste your token, fill in the filters, click **Start**.
+No Python needed. The app is a small window: fill in the filters and click **Start**. The access token is optional (see below).
 Results go to `Documents/MetaAdsScraper/<timestamp>/` by default. The form, including the token, is
 remembered between runs (in `%APPDATA%\MetaAdsScraper\settings.json` on Windows, `~/Library/Application Support/MetaAdsScraper/settings.json` on macOS).
 
@@ -33,7 +33,7 @@ To run the window from source: `python app.py`.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # paste your META_ACCESS_TOKEN
+cp .env.example .env          # optional: paste a META_ACCESS_TOKEN to use the API
 ```
 
 Token: confirm your identity at https://www.facebook.com/ID, create an app at developers.facebook.com,
@@ -64,6 +64,16 @@ output/<timestamp>/
 ad_snapshot_url, age_country_gender_reach_breakdown, media_count, media_files, media_error`.
 `media_files` holds `;`-separated paths relative to the run folder. The reach breakdown is a JSON string.
 The access token is stripped from `ad_snapshot_url`.
+
+## With or without a token
+
+- **With a token:** uses the official Meta API (stable, documented rate limits).
+- **Without a token:** searches the public Ad Library website in a headless browser. It scrolls through the
+  results (infinite scroll) and requests each ad's details for the reach breakdown, exactly like clicking
+  "See ad details". It needs no Facebook account. It uses Edge or Chrome if installed, otherwise it downloads
+  a headless Chromium once (~150 MB). The website takes one country / one page ID per search, so several
+  countries or page IDs mean several searches, with results de-duplicated. This mode depends on how the
+  Facebook website works today and may need fixes when Facebook changes it.
 
 ## How media is fetched
 
