@@ -1,3 +1,4 @@
 requests>=2.31
 python-dotenv>=1.0
 tqdm>=4.66
+playwright>=1.45

@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import requests
 
@@ -20,43 +21,46 @@ class AdLibraryError(RuntimeError):
     pass
 
 
-def build_params(
-    *,
-    ad_reached_countries: list[str],
-    search_terms: str | None = None,
-    search_page_ids: list[str] | None = None,
-    ad_active_status: str = "ALL",
-    ad_delivery_date_min: str | None = None,
-    ad_delivery_date_max: str | None = None,
-    languages: list[str] | None = None,
-    media_type: str = "ALL",
-    limit: int = 250,
-) -> dict[str, str]:
-    if not ad_reached_countries:
-        raise ValueError("ad_reached_countries is required")
-    if not search_terms and not search_page_ids:
-        raise ValueError("search_terms or search_page_ids is required")
-    if search_page_ids and len(search_page_ids) > 10:
-        raise ValueError("search_page_ids accepts at most 10 page IDs")
+@dataclass
+class Filters:
+    countries: list[str]
+    search_terms: str | None = None
+    search_page_ids: list[str] | None = None
+    active_status: str = "ALL"
+    date_min: str | None = None
+    date_max: str | None = None
+    languages: list[str] | None = None
+    media_type: str = "ALL"
 
+    def validate(self) -> None:
+        if not self.countries:
+            raise ValueError("at least one country is required")
+        if not self.search_terms and not self.search_page_ids:
+            raise ValueError("search terms or page IDs are required")
+        if self.search_page_ids and len(self.search_page_ids) > 10:
+            raise ValueError("at most 10 page IDs")
+
+
+def build_params(f: Filters, limit: int = 250) -> dict[str, str]:
+    f.validate()
     params = {
         "fields": ",".join(FIELDS),
         "ad_type": "ALL",
-        "ad_reached_countries": json.dumps([c.upper() for c in ad_reached_countries]),
-        "ad_active_status": ad_active_status.upper(),
-        "media_type": media_type.upper(),
+        "ad_reached_countries": json.dumps([c.upper() for c in f.countries]),
+        "ad_active_status": f.active_status.upper(),
+        "media_type": f.media_type.upper(),
         "limit": str(limit),
     }
-    if search_terms:
-        params["search_terms"] = search_terms
-    if search_page_ids:
-        params["search_page_ids"] = json.dumps([str(p) for p in search_page_ids])
-    if ad_delivery_date_min:
-        params["ad_delivery_date_min"] = ad_delivery_date_min
-    if ad_delivery_date_max:
-        params["ad_delivery_date_max"] = ad_delivery_date_max
-    if languages:
-        params["languages"] = json.dumps([l.lower() for l in languages])
+    if f.search_terms:
+        params["search_terms"] = f.search_terms
+    if f.search_page_ids:
+        params["search_page_ids"] = json.dumps([str(p) for p in f.search_page_ids])
+    if f.date_min:
+        params["ad_delivery_date_min"] = f.date_min
+    if f.date_max:
+        params["ad_delivery_date_max"] = f.date_max
+    if f.languages:
+        params["languages"] = json.dumps([l.lower() for l in f.languages])
     return params
 
 

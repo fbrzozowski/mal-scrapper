@@ -3,6 +3,7 @@
 import logging
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,9 +12,9 @@ from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 
-from meta_ads.api import AdLibraryClient, AdLibraryError
+from meta_ads.api import AdLibraryClient, AdLibraryError, Filters, build_params
 from meta_ads.downloader import download
-from meta_ads.snapshot import extract_media
+from meta_ads.snapshot import extract_media, media_from_snapshot
 from meta_ads.storage import append_row, dedupe, read_rows, redact, to_row
 
 log = logging.getLogger("meta_ads")
@@ -57,9 +58,12 @@ class MediaFetcher:
     def fetch(self, ad: dict, run_dir: Path) -> tuple[list[str], str]:
         """Extract and download all media for one ad. Returns (relative file paths, error text)."""
         ad_dir = run_dir / "media" / str(ad.get("page_id", "unknown")) / str(ad["id"])
-        self._throttle()
         try:
-            items = extract_media(self.page_session, str(ad["id"]))
+            if "snapshot" in ad:  # website mode: media URLs came with the search results
+                items = media_from_snapshot(ad["snapshot"])
+            else:
+                self._throttle()
+                items = extract_media(self.page_session, str(ad["id"]))
         except Exception as e:
             return [], redact(str(e))
 
@@ -101,9 +105,9 @@ def new_run_dir(out_dir: Path) -> Path:
 
 def run_scrape(
     *,
-    token: str,
+    token: str | None,
     api_version: str,
-    params: dict[str, str],
+    filters: Filters,
     run_dir: Path,
     max_ads: int | None = None,
     skip_media: bool = False,
@@ -112,7 +116,11 @@ def run_scrape(
     on_ad: Callable[[RunResult], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> RunResult:
-    """Run (or resume, if run_dir already has ads.csv) a scrape. Calls on_ad after each ad."""
+    """Run (or resume, if run_dir already has ads.csv) a scrape. Calls on_ad after each ad.
+
+    With a token the official API is used; without one, the public website in a headless browser.
+    """
+    filters.validate()
     run_dir.mkdir(parents=True, exist_ok=True)
     result = RunResult(csv_path=run_dir / "ads.csv")
 
@@ -121,32 +129,47 @@ def run_scrape(
     if done_ids:
         log.info("Resuming: %d ads already complete", len(done_ids))
 
-    client = AdLibraryClient(token, api_version)
     fetcher = None if skip_media else MediaFetcher(workers, delay)
-    try:
-        for ad in client.iter_ads(params, max_ads):
-            if should_stop and should_stop():
-                result.stopped = True
-                break
-            if ad["id"] in done_ids:
-                continue
-            files, error = [], ""
+    with ExitStack() as stack:
+        if token:
+            log.info("Using the Meta API (access token provided)")
+            web = None
+            ads = AdLibraryClient(token, api_version).iter_ads(build_params(filters), max_ads)
+        else:
+            from meta_ads.web import WebSearch
+
+            log.info("No access token: searching the Ad Library website in a headless browser")
+            web = stack.enter_context(WebSearch(delay))
+            ads = web.iter_ads(filters, max_ads)
+        try:
+            for ad in ads:
+                if should_stop and should_stop():
+                    result.stopped = True
+                    break
+                if ad["id"] in done_ids:
+                    continue
+                if web:
+                    ad["age_country_gender_reach_breakdown"], _ = web.reach_breakdown(ad, filters.countries[0])
+                files, error = [], ""
+                if fetcher:
+                    files, error = fetcher.fetch(ad, run_dir)
+                    if error:
+                        result.failed += 1
+                        log.warning("ad %s: %s", ad["id"], error)
+                append_row(result.csv_path, to_row(ad, files, error))
+                result.processed += 1
+                result.media_count += len(files)
+                if on_ad:
+                    on_ad(result)
+        except AdLibraryError as e:
+            result.api_error = str(e)
+            log.error("API error: %s", result.api_error)
+        except RuntimeError as e:
+            result.api_error = str(e)
+            log.error("%s", e)
+        finally:
             if fetcher:
-                files, error = fetcher.fetch(ad, run_dir)
-                if error:
-                    result.failed += 1
-                    log.warning("ad %s: %s", ad["id"], error)
-            append_row(result.csv_path, to_row(ad, files, error))
-            result.processed += 1
-            result.media_count += len(files)
-            if on_ad:
-                on_ad(result)
-    except AdLibraryError as e:
-        result.api_error = str(e)
-        log.error("API error: %s", result.api_error)
-    finally:
-        if fetcher:
-            fetcher.close()
-        if result.csv_path.exists():
-            dedupe(result.csv_path)
+                fetcher.close()
+            if result.csv_path.exists():
+                dedupe(result.csv_path)
     return result

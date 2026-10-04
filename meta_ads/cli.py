@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from meta_ads.api import build_params
+from meta_ads.api import Filters
 from meta_ads.config import load_settings
 from meta_ads.runner import new_run_dir, run_scrape
 
@@ -33,7 +33,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     q.add_argument("--languages", type=_csv_list, help="ISO 639-1 codes, e.g. pl,en")
     q.add_argument("--media-type", default="ALL", choices=["ALL", "IMAGE", "MEME", "VIDEO", "NONE"])
     q.add_argument("--max-ads", type=int, help="Stop after this many ads")
-    q.add_argument("--page-size", type=int, default=250, help="API page size (limit)")
 
     o = p.add_argument_group("output / media")
     o.add_argument("--out", type=Path, default=Path("output"), help="Base output directory")
@@ -57,18 +56,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     token, api_version = load_settings()
 
+    filters = Filters(
+        countries=args.countries,
+        search_terms=args.search_terms,
+        search_page_ids=args.search_page_ids,
+        active_status=args.active_status,
+        date_min=args.date_min,
+        date_max=args.date_max,
+        languages=args.languages,
+        media_type=args.media_type,
+    )
     try:
-        params = build_params(
-            ad_reached_countries=args.countries,
-            search_terms=args.search_terms,
-            search_page_ids=args.search_page_ids,
-            ad_active_status=args.active_status,
-            ad_delivery_date_min=args.date_min,
-            ad_delivery_date_max=args.date_max,
-            languages=args.languages,
-            media_type=args.media_type,
-            limit=args.page_size,
-        )
+        filters.validate()
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -79,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_scrape(
             token=token,
             api_version=api_version,
-            params=params,
+            filters=filters,
             run_dir=run_dir,
             max_ads=args.max_ads,
             skip_media=args.skip_media,

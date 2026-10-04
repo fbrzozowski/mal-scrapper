@@ -13,7 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from meta_ads.api import build_params
+from meta_ads.api import Filters
 from meta_ads.config import DEFAULT_API_VERSION
 from meta_ads.runner import RunResult, new_run_dir, run_scrape
 
@@ -106,7 +106,7 @@ class App(tk.Tk):
         ttk.Checkbutton(
             token_row, text="show", variable=show, command=lambda: token_entry.config(show="" if show.get() else "•")
         ).pack(side="left", padx=(6, 0))
-        add("Access token", token_row)
+        add("Access token", token_row, "optional")
 
         add("Search terms", ttk.Entry(form, textvariable=self.vars["search_terms"]), "or page IDs below")
         add("Page IDs", ttk.Entry(form, textvariable=self.vars["page_ids"]), "comma-separated, max 10")
@@ -152,9 +152,6 @@ class App(tk.Tk):
     def _collect(self) -> dict | None:
         v = {k: var.get() for k, var in self.vars.items()}
         v = {k: x.strip() if isinstance(x, str) else x for k, x in v.items()}
-        if not v["token"]:
-            messagebox.showerror("Missing token", "Paste your Meta access token.")
-            return None
         for key in ("date_min", "date_max"):
             if v[key] and not DATE_RE.match(v[key]):
                 messagebox.showerror("Invalid date", f"Use YYYY-MM-DD, got: {v[key]}")
@@ -162,17 +159,18 @@ class App(tk.Tk):
         if v["max_ads"] and not v["max_ads"].isdigit():
             messagebox.showerror("Invalid number", "Max ads must be a whole number (or empty).")
             return None
+        v["filters"] = Filters(
+            countries=_split(v["countries"]),
+            search_terms=v["search_terms"] or None,
+            search_page_ids=_split(v["page_ids"]) or None,
+            active_status=v["status"],
+            date_min=v["date_min"] or None,
+            date_max=v["date_max"] or None,
+            languages=_split(v["languages"]) or None,
+            media_type=v["media_type"],
+        )
         try:
-            v["params"] = build_params(
-                ad_reached_countries=_split(v["countries"]),
-                search_terms=v["search_terms"] or None,
-                search_page_ids=_split(v["page_ids"]) or None,
-                ad_active_status=v["status"],
-                ad_delivery_date_min=v["date_min"] or None,
-                ad_delivery_date_max=v["date_max"] or None,
-                languages=_split(v["languages"]) or None,
-                media_type=v["media_type"],
-            )
+            v["filters"].validate()
         except ValueError as e:
             messagebox.showerror("Check the form", str(e).replace("_", " ").capitalize())
             return None
@@ -190,15 +188,15 @@ class App(tk.Tk):
         self.stop_btn.config(state="normal")
         self.open_btn.config(state="normal")
         self.progress.start(12)
-        self.status.config(text="Fetching ads…")
+        self.status.config(text="Fetching ads…" if v["token"] else "Starting browser and searching…")
         log.info("Saving to %s", self.last_run_dir)
 
         def work():
             try:
                 result = run_scrape(
-                    token=v["token"],
+                    token=v["token"] or None,
                     api_version=DEFAULT_API_VERSION,
-                    params=v["params"],
+                    filters=v["filters"],
                     run_dir=self.last_run_dir,
                     max_ads=int(v["max_ads"]) if v["max_ads"] else None,
                     skip_media=not v["download_media"],

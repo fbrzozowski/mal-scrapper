@@ -2,19 +2,21 @@ import json
 
 import pytest
 
-from meta_ads.api import AdLibraryClient, AdLibraryError, build_params
+from meta_ads.api import AdLibraryClient, AdLibraryError, Filters, build_params
 from meta_ads.storage import redact, strip_token
 
 
 def test_build_params_serialises_lists():
     p = build_params(
-        ad_reached_countries=["pl", "de"],
-        search_terms="shoes",
-        search_page_ids=["1", "2"],
-        ad_active_status="active",
-        ad_delivery_date_min="2026-01-01",
-        ad_delivery_date_max="2026-02-01",
-        languages=["PL"],
+        Filters(
+            countries=["pl", "de"],
+            search_terms="shoes",
+            search_page_ids=["1", "2"],
+            active_status="active",
+            date_min="2026-01-01",
+            date_max="2026-02-01",
+            languages=["PL"],
+        )
     )
     assert json.loads(p["ad_reached_countries"]) == ["PL", "DE"]
     assert json.loads(p["search_page_ids"]) == ["1", "2"]
@@ -27,9 +29,9 @@ def test_build_params_serialises_lists():
 
 def test_build_params_requires_search():
     with pytest.raises(ValueError):
-        build_params(ad_reached_countries=["PL"])
+        build_params(Filters(countries=["PL"]))
     with pytest.raises(ValueError):
-        build_params(ad_reached_countries=[], search_terms="x")
+        build_params(Filters(countries=[], search_terms="x"))
 
 
 class FakeResp:
@@ -84,3 +86,27 @@ def test_token_helpers():
     url = "https://www.facebook.com/ads/archive/render_ad/?id=42&access_token=SECRET"
     assert strip_token(url) == "https://www.facebook.com/ads/archive/render_ad/?id=42"
     assert "SECRET" not in redact(f"failed GET {url}")
+
+
+def test_web_search_urls_one_per_country_and_page():
+    from urllib.parse import parse_qs, urlsplit
+
+    from meta_ads.web import search_urls
+
+    urls = search_urls(Filters(countries=["pl", "de"], search_page_ids=["11", "22"], languages=["pl"], date_min="2026-01-01"))
+    assert len(urls) == 4
+    q = parse_qs(urlsplit(urls[0]).query)
+    assert q["country"] == ["PL"] and q["view_all_page_id"] == ["11"] and q["search_type"] == ["page"]
+    assert q["content_languages[0]"] == ["pl"] and q["start_date[min]"] == ["2026-01-01"]
+
+    q = parse_qs(urlsplit(search_urls(Filters(countries=["PL"], search_terms="bank"))[0]).query)
+    assert q["q"] == ["bank"] and q["search_type"] == ["keyword_unordered"] and q["active_status"] == ["all"]
+
+
+def test_web_result_mapped_to_api_fields():
+    from meta_ads.web import to_api_shape
+
+    ad = to_api_shape({"ad_archive_id": "5", "page_id": "9", "page_name": "P", "start_date": 1790751600, "end_date": 1791097200, "is_active": False, "snapshot": {}})
+    assert ad["id"] == "5" and ad["ad_delivery_start_time"] == "2026-09-30" and ad["ad_delivery_stop_time"] == "2026-10-04"
+    assert ad["ad_snapshot_url"] == "https://www.facebook.com/ads/library/?id=5"
+    assert to_api_shape({"ad_archive_id": "5", "start_date": 1790751600, "end_date": 1791097200, "is_active": True})["ad_delivery_stop_time"] == ""
