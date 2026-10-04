@@ -8,11 +8,14 @@ and a column listing that ad's downloaded media files.
 
 No Python needed. The app is a small window: paste your token, fill in the filters, click **Start**.
 Results go to `Documents/MetaAdsScraper/<timestamp>/` by default. The form, including the token, is
-remembered between runs (in `%APPDATA%\\MetaAdsScraper\\settings.json` on Windows, `~/Library/Application Support/MetaAdsScraper/settings.json` on macOS).
+remembered between runs (in `%APPDATA%\MetaAdsScraper\settings.json` on Windows, `~/Library/Application Support/MetaAdsScraper/settings.json` on macOS).
 
-**Building:** push this project to GitHub. The workflow `.github/workflows/build.yml` builds both apps on
-GitHub's Windows and macOS machines. Download them from the repo's **Actions** tab (latest run →
-Artifacts). If you push a tag like `v1.0`, they are also attached to a **Release**.
+**Download** (public, no GitHub account needed; the repo must be public):
+- Windows: `https://github.com/<owner>/<repo>/releases/latest/download/MetaAdsScraper.exe`
+- macOS: `https://github.com/<owner>/<repo>/releases/latest/download/MetaAdsScraper-macos.zip`
+
+**Building:** `.github/workflows/build.yml` builds both apps on GitHub's Windows and macOS machines.
+Every push to `main` replaces the **latest** release. Pushing a tag like `v1.0` also creates a permanent `v1.0` release.
 
 - **Windows:** `MetaAdsScraper.exe`. Windows SmartScreen will warn because the app isn't signed:
   click **More info → Run anyway**.

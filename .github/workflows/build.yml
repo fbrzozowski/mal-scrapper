@@ -1,5 +1,12 @@
 name: Build apps
 
+# Builds the Windows .exe and macOS .app and publishes them as public GitHub Release downloads:
+#   push to main  -> rolling "latest" release (same download links, always the newest build)
+#   push tag v1.2 -> permanent "v1.2" release
+# Public links (repo must be public):
+#   https://github.com/<owner>/<repo>/releases/latest/download/MetaAdsScraper.exe
+#   https://github.com/<owner>/<repo>/releases/latest/download/MetaAdsScraper-macos.zip
+
 on:
   push:
     branches: [main]
@@ -8,6 +15,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows:
@@ -21,12 +32,8 @@ jobs:
       - run: pyinstaller --onefile --windowed --name MetaAdsScraper app.py
       - uses: actions/upload-artifact@v4
         with:
-          name: MetaAdsScraper-windows
+          name: windows
           path: dist/MetaAdsScraper.exe
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/MetaAdsScraper.exe
 
   macos:
     runs-on: macos-latest  # Apple Silicon (M1 and newer)
@@ -41,9 +48,35 @@ jobs:
       - run: ditto -c -k --keepParent dist/MetaAdsScraper.app dist/MetaAdsScraper-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: MetaAdsScraper-macos
+          name: macos
           path: dist/MetaAdsScraper-macos.zip
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/MetaAdsScraper-macos.zip
+          path: dist
+          merge-multiple: true
+
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Meta Ads Scraper $GITHUB_REF_NAME" \
+            --notes "Windows: MetaAdsScraper.exe · macOS (Apple Silicon): MetaAdsScraper-macos.zip" \
+            --latest
+
+      - name: Publish rolling "latest" release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Latest build" \
+            --notes "Built from ${GITHUB_SHA::7} on $(date -u '+%Y-%m-%d %H:%M UTC'). Windows: MetaAdsScraper.exe · macOS (Apple Silicon): MetaAdsScraper-macos.zip" \
+            --latest
