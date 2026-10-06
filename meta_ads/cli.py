@@ -39,7 +39,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     o.add_argument("--resume", type=Path, help="Existing run directory to continue")
     o.add_argument("--skip-media", action="store_true", help="Only save metadata")
     o.add_argument("--workers", type=int, default=4, help="Parallel downloads per ad")
-    o.add_argument("--delay", type=float, default=1.0, help="Seconds between Ad Library page fetches")
+    o.add_argument("--delay", type=float, default=1.0, help="Minimum seconds between requests to Facebook; each wait is random, between this and this + 2")
     o.add_argument("-v", "--verbose", action="store_true")
 
     args = p.parse_args(argv)

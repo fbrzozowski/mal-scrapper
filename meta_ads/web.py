@@ -7,6 +7,7 @@ breakdown comes from the same request the "See ad details" dialog makes.
 
 import json
 import logging
+import random
 import re
 import subprocess
 import sys
@@ -23,6 +24,13 @@ SEARCH_URL = "https://www.facebook.com/ads/library/?"
 # Facebook changes this id when it redeploys; discover_details_doc_id() finds the current one.
 DETAILS_DOC_ID = "25068828942793558"
 DETAILS_OPERATION = "AdLibraryV3AdDetailsQuery"
+# When Facebook says "Rate limit", wait 30s, 60s, 120s, 240s before giving up on that request.
+RATE_LIMIT_RETRIES = 4
+RATE_LIMIT_WAIT = 30
+# Facebook sometimes serves anonymous visitors an empty result page for a search that does
+# have ads; reloading after a pause usually gets the real results (10s, 20s, 40s).
+EMPTY_RETRIES = 3
+EMPTY_WAIT = 10
 
 _DETAILS_JS = """async ([lsd, docId, vars]) => {
   const body = new URLSearchParams({av: '0', __user: '0', __a: '1', lsd, fb_api_caller_class: 'RelayModern',
@@ -124,6 +132,7 @@ class WebSearch:
         self._batches: list[list[dict]] = []
         self._has_next = True
         self._doc_html: str | None = None
+        self._rate_limited = False
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -140,6 +149,11 @@ class WebSearch:
             self._browser.close()
         if self._pw:
             self._pw.stop()
+
+    def _pause(self):
+        """Wait a random 1-3 s (with the default --delay) between requests to Facebook."""
+        low = max(self.delay, 1.0)
+        self._page.wait_for_timeout(random.uniform(low, low + 2) * 1000)
 
     def _launch(self):
         chromium = self._pw.chromium
@@ -171,14 +185,24 @@ class WebSearch:
                     if not self._has_next:
                         log.info("Reached the end of the results")
                 if "Rate limit exceeded" in resp.text():
-                    log.warning("Facebook rate-limited scrolling; waiting before trying again")
+                    self._rate_limited = True
         except Exception as e:  # never break the browser's event loop
             log.debug("response handler: %s", e)
 
     def _load(self, url: str) -> list[dict]:
+        for attempt in range(EMPTY_RETRIES + 1):
+            ads = self._load_once(url)
+            if ads or attempt == EMPTY_RETRIES:
+                return ads
+            wait = EMPTY_WAIT * 2**attempt
+            log.info("Facebook returned no ads; reloading in %ss to make sure", wait)
+            self._page.wait_for_timeout(wait * 1000)
+
+    def _load_once(self, url: str) -> list[dict]:
         self._batches.clear()
         self._has_next = True
         self._doc_html = None
+        self._rate_limited = False
         self._page.goto(url, wait_until="domcontentloaded", timeout=90_000)
         self._page.wait_for_timeout(2500)
         self._lsd = self._page.evaluate("() => { try { return require('LSD').token } catch (e) { return null } }")
@@ -186,7 +210,7 @@ class WebSearch:
         if '"xfb_ad_library_is_captcha_required":true' in html:
             raise RuntimeError("Facebook is asking for a captcha. Wait a while and try again.")
         count = re.search(r'"search_results_connection":\{"count":(\d+)', html)
-        if count:
+        if count and count.group(1) != "0":
             log.info("Facebook reports about %s matching ads", count.group(1))
         if '"has_next_page":false' in html:
             self._has_next = False
@@ -197,7 +221,7 @@ class WebSearch:
         for url in search_urls(filters):
             log.info("Searching: %s", url)
             pending = self._load(url)
-            idle = 0
+            idle = strikes = 0
             while True:
                 for ad in pending:
                     if ad["ad_archive_id"] in seen:
@@ -210,11 +234,18 @@ class WebSearch:
                 if not self._has_next:
                     break
                 self._page.mouse.wheel(0, 20_000)
-                self._page.wait_for_timeout(int(max(self.delay, 1.0) * 1500))
+                self._pause()
+                if self._rate_limited:
+                    self._rate_limited = False
+                    wait = RATE_LIMIT_WAIT * 2 ** min(strikes, RATE_LIMIT_RETRIES - 1)
+                    strikes += 1
+                    log.warning("Facebook rate-limited scrolling; waiting %ss", wait)
+                    self._page.wait_for_timeout(wait * 1000)
+                    continue
                 if self._batches:
                     pending = [a for batch in self._batches for a in batch]
                     self._batches.clear()
-                    idle = 0
+                    idle = strikes = 0
                 else:
                     idle += 1
                     if idle >= 3:
@@ -232,22 +263,32 @@ class WebSearch:
             "adArchiveID": ad["id"], "pageID": ad["page_id"], "country": country.upper(),
             "sessionID": str(uuid.uuid4()), "source": None, "isAdNonPolitical": True, "isAdNotAAAEligible": False,
         }
-        for attempt in range(2):
+        strikes = 0
+        looked_up_doc_id = False
+        while True:
+            self._pause()
             raw = self._page.evaluate(_DETAILS_JS, [self._lsd, self._details_doc_id, variables])
             data = json.loads(raw.split("\n")[0] or "{}")
-            if "errors" not in data:
-                break
-            if attempt == 0 and not any("Rate limit" in e.get("message", "") for e in data["errors"]):
+            errors = data.get("errors")
+            if not errors:
+                return _find_key(data, "age_country_gender_reach_breakdown"), _find_key(data, "eu_total_reach")
+            if any("Rate limit" in e.get("message", "") for e in errors):
+                if strikes < RATE_LIMIT_RETRIES:
+                    wait = RATE_LIMIT_WAIT * 2**strikes
+                    strikes += 1
+                    log.warning("Facebook rate-limited ad details; waiting %ss", wait)
+                    self._page.wait_for_timeout(wait * 1000)
+                    continue
+            elif not looked_up_doc_id:
                 # Most likely Facebook changed the query id; look up the current one once.
+                looked_up_doc_id = True
                 found = self._page.evaluate(_FIND_DOC_ID_JS, DETAILS_OPERATION)
                 if found and found != self._details_doc_id:
                     log.info("Updated ad-details query id")
                     self._details_doc_id = found
                     continue
-            log.debug("details error for %s: %s", ad["id"], data["errors"])
+            log.warning("ad %s: no reach breakdown (%s)", ad["id"], errors[0].get("message", errors))
             return None, None
-        self._page.wait_for_timeout(int(self.delay * 1000))
-        return _find_key(data, "age_country_gender_reach_breakdown"), _find_key(data, "eu_total_reach")
 
 
 def _find_key(obj, key):
